@@ -1,0 +1,253 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Web Linux</title>
+    <style>
+        body { background: #121212; color: #00ff00; font-family: 'Courier New', monospace; padding: 20px; overflow-x: hidden; margin: 0; transition: color 0.2s; }
+        #terminal { max-width: 900px; margin: auto; }
+        #output { white-space: pre-wrap; margin-bottom: 10px; word-break: break-all; }
+        .prompt { color: inherit; font-weight: bold; }
+        .path { color: #5555ff; font-weight: bold; }
+        input { background: transparent; border: none; color: inherit; font-family: inherit; font-size: inherit; outline: none; width: 60%; }
+        
+        .window { 
+            position: absolute; min-width: 250px; min-height: 180px; width: 450px; height: 350px; 
+            background: #eee; border: 2px solid #555; color: #000; box-shadow: 10px 10px 0 rgba(0,0,0,0.5); 
+            z-index: 100; resize: both; overflow: hidden; display: flex; flex-direction: column; 
+        }
+        .win-title { background: #333; color: #fff; padding: 5px; cursor: move; display: flex; justify-content: space-between; font-weight: bold; user-select: none; flex-shrink: 0; }
+        .win-close { cursor: pointer; background: #ff4444; padding: 0 8px; border: 1px solid #000; }
+        .win-body { flex-grow: 1; width: 100%; height: 100%; position: relative; display: flex; flex-direction: column; }
+        iframe, .editor-area { width: 100%; height: 100%; border: none; background: white; display: block; flex-grow: 1; }
+        .editor-area { font-family: monospace; padding: 10px; box-sizing: border-box; resize: none; outline: none; color: #000; }
+        .editor-save { background: #00aa00; color: white; border: none; padding: 5px; cursor: pointer; font-weight: bold; }
+    </style>
+</head>
+<body>
+
+<div id="terminal">
+    <div id="output">Welcome to Web Linux. [v1.0]
+Type 'mount' to add C drive use quotes when using cammand with files/folders that have spaces.
+Commands: list, ls, cd, cd c, rename, read, edit, write, del, rm, mkdir, js, ./, execute, color, clear, help.</div>
+    <div id="input-line">
+        <span class="prompt">user@weblinux</span>:<span id="display-path" class="path">~</span>$ 
+        <input type="text" id="cmd-input" autofocus autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false">
+    </div>
+</div>
+
+<script>
+    const output = document.getElementById('output');
+    const input = document.getElementById('cmd-input');
+    const displayPath = document.getElementById('display-path');
+
+    let rootHandle = null;
+    let currentHandle = null;
+    let pathStack = ["~"];
+    let history = [];
+    let historyIdx = -1;
+
+    window.addEventListener('keydown', (e) => {
+        if (document.activeElement.tagName === 'INPUT' || document.activeElement.tagName === 'TEXTAREA') return;
+        input.focus();
+    });
+
+    input.addEventListener('keydown', async (e) => {
+        if (e.key === 'Enter') {
+            const val = input.value; 
+            if (val.trim()) {
+                print(`user@weblinux:${pathStack.join('/')} $ ${val}`);
+                history.unshift(val.trim());
+                historyIdx = -1;
+                await handleCommand(val.trim());
+            }
+            input.value = '';
+            window.scrollTo(0, document.body.scrollHeight);
+        } 
+        else if (e.key === 'ArrowUp') {
+            if (historyIdx < history.length - 1) {
+                historyIdx++;
+                input.value = history[historyIdx];
+            }
+            e.preventDefault();
+        } 
+        else if (e.key === 'ArrowDown') {
+            if (historyIdx > 0) {
+                historyIdx--;
+                input.value = history[historyIdx];
+            } else {
+                historyIdx = -1;
+                input.value = "";
+            }
+            e.preventDefault();
+        }
+    });
+
+    function print(text, isHTML = false) {
+        const div = document.createElement('div');
+        if (isHTML) div.innerHTML = text;
+        else div.textContent = text;
+        output.appendChild(div);
+    }
+
+    function makeDraggable(win) {
+        let isDragging = false; let offset = { x: 0, y: 0 };
+        const titleBar = win.querySelector('.win-title');
+        titleBar.onmousedown = (e) => {
+            isDragging = true;
+            offset = { x: e.clientX - win.offsetLeft, y: e.clientY - win.offsetTop };
+            document.querySelectorAll('.window').forEach(w => w.style.zIndex = 100);
+            win.style.zIndex = 101;
+        };
+        document.addEventListener('mousemove', (e) => {
+            if (isDragging) {
+                win.style.left = (e.clientX - offset.x) + 'px';
+                win.style.top = (e.clientY - offset.y) + 'px';
+            }
+        });
+        document.addEventListener('mouseup', () => { isDragging = false; });
+    }
+
+    async function handleCommand(line) {
+
+        const parts = line.match(/(?:[^\s"]+|"[^"]*")+/g) || [];
+
+        const cleanParts = parts.map(p => p.replace(/^"|"$/g, '').replace(/=/g, ' '));
+        
+        const cmd = cleanParts[0]?.toLowerCase();
+        const arg1 = cleanParts[1];
+        const arg2 = cleanParts[2];
+        const content = cleanParts.slice(2).join(' ');
+
+        if (cmd === 'mount') {
+            try {
+                rootHandle = await window.showDirectoryPicker({ mode: 'readwrite' });
+                currentHandle = rootHandle;
+                print("System Mounted. Write access active.");
+            } catch (e) { print("Error: " + e.message); }
+        }
+        else if (cmd === 'color') {
+            if (!arg1) return print("Usage: color [name/hex]");
+            document.body.style.color = arg1;
+            displayPath.style.color = arg1;
+            print("Color updated.");
+        }
+        else if (cmd === 'clear') { output.innerHTML = "Web Linux Cleared."; }
+        else if (cmd === 'edit') {
+            if (!rootHandle) return print("Error: Run 'mount' first.");
+            try {
+                const fileHandle = await currentHandle.getFileHandle(arg1, { create: true });
+                const file = await fileHandle.getFile();
+                const text = await file.text();
+                const win = document.createElement('div');
+                win.className = 'window';
+                win.style.top = '100px'; win.style.left = '100px';
+                win.innerHTML = `<div class="win-title"><span>Edit: ${arg1}</span><span class="win-close">X</span></div>
+                                 <div class="win-body"><textarea class="editor-area">${text}</textarea>
+                                 <button class="editor-save">Save</button></div>`;
+                document.body.appendChild(win);
+                makeDraggable(win);
+                win.querySelector('.win-close').onclick = () => win.remove();
+                win.querySelector('.editor-save').onclick = async () => {
+                    const writable = await fileHandle.createWritable();
+                    await writable.write(win.querySelector('.editor-area').value);
+                    await writable.close();
+                    print("Saved " + arg1);
+                };
+            } catch(e) { print("Error: " + e.message); }
+        }
+        else if (cmd === 'execute') {
+            if (!rootHandle) return print("Error: Run 'mount' first.");
+            try {
+                const fileHandle = await currentHandle.getFileHandle(arg1);
+                const file = await fileHandle.getFile();
+                const blob = new Blob([await file.text()], { type: 'text/html' });
+                const url = URL.createObjectURL(blob);
+                const win = document.createElement('div');
+                win.className = 'window';
+                win.style.top = '120px'; win.style.left = '120px';
+                win.innerHTML = `<div class="win-title"><span>${arg1}</span><span class="win-close">X</span></div>
+                                 <div class="win-body"><iframe src="${url}"></iframe></div>`;
+                document.body.appendChild(win);
+                makeDraggable(win);
+                win.querySelector('.win-close').onclick = () => { URL.revokeObjectURL(url); win.remove(); };
+            } catch(e) { print("Error: " + e.message); }
+        }
+        else if (cmd === 'ls' || cmd === 'list') {
+            if (!rootHandle) return print("Error: Run 'mount' first.");
+            for await (const entry of currentHandle.values()) print((entry.kind === 'directory' ? "[DIR] " : "      ") + entry.name);
+        }
+        else if (cmd === 'cd') {
+            if (!rootHandle) return print("Error: Run 'mount' first.");
+            if (!arg1 || arg1 === "c") { currentHandle = rootHandle; pathStack = ["~"]; }
+            else if (arg1 === "..") {
+                if (pathStack.length > 1) {
+                    pathStack.pop(); currentHandle = rootHandle;
+                    for (let i = 1; i < pathStack.length; i++) currentHandle = await currentHandle.getDirectoryHandle(pathStack[i]);
+                }
+            } else {
+                try {
+                    const next = await currentHandle.getDirectoryHandle(arg1);
+                    currentHandle = next; pathStack.push(arg1);
+                } catch { print(`cd: no such directory: ${arg1}`); }
+            }
+            displayPath.textContent = pathStack.join('/');
+        }
+        else if (cmd === 'rename') {
+            if (!rootHandle) return print("Error: Run 'mount' first.");
+            try {
+                const entry = await currentHandle.getFileHandle(arg1).catch(() => currentHandle.getDirectoryHandle(arg1));
+                await entry.move(arg2); print(`Renamed ${arg1} to ${arg2}`);
+            } catch(e) { print("Error: " + e.message); }
+        }
+        else if (cmd === 'write') {
+            if (!rootHandle) return print("Error: Run 'mount' first.");
+            try {
+                const fileHandle = await currentHandle.getFileHandle(arg1, { create: true });
+                const writable = await fileHandle.createWritable();
+                await writable.write(content); await writable.close(); print("Saved " + arg1);
+            } catch(e) { print("Error: " + e.message); }
+        }
+        else if (cmd === 'read' || cmd === 'cat') {
+            if (!rootHandle) return print("Error: Run 'mount' first.");
+            try {
+                const fileHandle = await currentHandle.getFileHandle(arg1);
+                const file = await fileHandle.getFile(); print(await file.text());
+            } catch(e) { print("Error: " + e.message); }
+        }
+        else if (cmd === 'del' || cmd === 'rm') {
+            if (!rootHandle) return print("Error: Run 'mount' first.");
+            try {
+                await currentHandle.removeEntry(arg1, { recursive: true }); print("Deleted " + arg1);
+            } catch(e) { print("Error: " + e.message); }
+        }
+        else if (cmd === 'mkdir') {
+            if (!rootHandle) return print("Error: Run 'mount' first.");
+            try {
+                await currentHandle.getDirectoryHandle(arg1, { create: true }); print("Created Folder " + arg1);
+            } catch(e) { print("Error: " + e.message); }
+        }
+        else if (cmd === 'js') {
+            if (!rootHandle) return print("Error: Run 'mount' first.");
+            try {
+                const fileHandle = await currentHandle.getFileHandle(arg1);
+                const file = await fileHandle.getFile(); eval(await file.text());
+            } catch(e) { print("JS Error: " + e.message); }
+        }
+        else if (line.startsWith('./')) {
+            if (!rootHandle) return print("Error: Run 'mount' first.");
+            try {
+                const fname = line.substring(2).replace(/^"|"$/g, '').replace(/=/g, ' ');
+                const fileHandle = await currentHandle.getFileHandle(fname);
+                const file = await fileHandle.getFile();
+                print(`<div style="border:1px solid currentColor;padding:5px;margin:5px 0;">${await file.text()}</div>`, true);
+            } catch(e) { print("Error: " + e.message); }
+        }
+        else if (cmd === 'help') {
+            print("Type 'mount' to add C drive use quotes when using cammand with files/folders that have spaces.");
+            print("mount, ls, cd [dir/c/..], rename, read, edit, write, del, rm, mkdir, js, ./, execute, color, clear");
+        }
+        else if (line !== "") { print(`Command not found: ${cmd}`); }
+    }
+</script>
+</body>
+</html>
